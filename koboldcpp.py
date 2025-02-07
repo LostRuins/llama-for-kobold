@@ -4631,7 +4631,7 @@ def setuptunnel(has_sd):
             elif sys.platform=="darwin":
                 print("Starting Cloudflare Tunnel for MacOS, please wait...", flush=True)
                 tunnelproc = subprocess.Popen(f"./cloudflared tunnel --url {httpsaffix}://localhost:{args.port}", text=True, encoding='utf-8', shell=True, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
-            elif sys.platform == "linux" and platform.uname()[4] == 'aarch64':
+            elif sys.platform == "linux" and platform.uname()[4] == "aarch64":
                 print("Starting Cloudflare Tunnel for ARM64 Linux, please wait...", flush=True)
                 tunnelproc = subprocess.Popen(f"./cloudflared-linux-arm64 tunnel --url {httpsaffix}://localhost:{args.port}", text=True, encoding='utf-8', shell=True, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
             else:
@@ -4679,7 +4679,7 @@ def setuptunnel(has_sd):
                 subprocess.run("curl -fL https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-darwin-amd64.tgz -o cloudflared-darwin-amd64.tgz", shell=True, capture_output=True, text=True, check=True, encoding='utf-8')
                 subprocess.run("tar -xzf cloudflared-darwin-amd64.tgz", shell=True)
                 subprocess.run("chmod +x 'cloudflared'", shell=True)
-        elif sys.platform == "linux" and platform.uname()[4] == 'aarch64':
+        elif sys.platform == "linux" and platform.uname()[4] == "aarch64":
             if os.path.exists("cloudflared-linux-arm64") and os.path.getsize("cloudflared-linux-arm64") > 1000000:
                 print("Cloudflared file exists, reusing it...")
             else:
