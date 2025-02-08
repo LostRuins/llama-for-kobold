@@ -2408,7 +2408,7 @@ Enter Prompt:<br>
             opts = []
             if args.admin and args.admindir and os.path.exists(args.admindir) and self.check_header_password(args.adminpassword):
                 dirpath = os.path.abspath(args.admindir)
-                opts = [f for f in os.listdir(dirpath) if f.endswith(".kcpps") and os.path.isfile(os.path.join(dirpath, f))]
+                opts = [f for f in sorted(os.listdir(dirpath)) if f.endswith(".kcpps") and os.path.isfile(os.path.join(dirpath, f))]
             response_body = (json.dumps(opts).encode())
 
         elif self.path.endswith(('/api/extra/perf')):
