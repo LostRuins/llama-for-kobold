@@ -10,6 +10,7 @@
 
 import copy
 import ctypes
+import hmac
 import multiprocessing
 import os
 import math
@@ -2259,7 +2260,7 @@ class KcppServerRequestHandler(http.server.SimpleHTTPRequestHandler):
                 auth_header = self.headers['authorization']
             if auth_header is not None and auth_header.startswith('Bearer '):
                 token = auth_header[len('Bearer '):].strip()
-                if token==target_password:
+                if hmac.compare_digest(token.encode(), target_password.encode()):
                     auth_ok = True
         return auth_ok
 
