@@ -193,6 +193,7 @@ class generation_inputs(ctypes.Structure):
                 ("min_p", ctypes.c_float),
                 ("typical_p", ctypes.c_float),
                 ("tfs", ctypes.c_float),
+                ("nsigma", ctypes.c_float),
                 ("rep_pen", ctypes.c_float),
                 ("rep_pen_range", ctypes.c_int),
                 ("rep_pen_slope", ctypes.c_float),
@@ -1115,6 +1116,7 @@ def generate(genparams, stream_flag=False):
     min_p = float(genparams.get('min_p', 0.0))
     typical_p = float(genparams.get('typical', 1.0))
     tfs = float(genparams.get('tfs', 1.0))
+    nsigma = float(genparams.get('nsigma', -1.0))
     rep_pen = float(genparams.get('rep_pen', 1.0))
     rep_pen_range = int(genparams.get('rep_pen_range', 320))
     rep_pen_slope = float(genparams.get('rep_pen_slope', 1.0))
@@ -1181,6 +1183,7 @@ def generate(genparams, stream_flag=False):
     inputs.min_p = min_p
     inputs.typical_p = typical_p
     inputs.tfs = tfs
+    inputs.nsigma = nsigma
     inputs.rep_pen = rep_pen
     inputs.rep_pen_range = rep_pen_range
     inputs.rep_pen_slope = rep_pen_slope

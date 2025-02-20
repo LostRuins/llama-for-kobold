@@ -29,6 +29,7 @@ struct kcpp_params {
     float   top_p             = 0.95f; // 1.0 = disabled
     float   min_p             = 0.0f; // 0.0 = disabled
     float   tfs_z             = 1.00f; // 1.0 = disabled
+    float   nsigma            = -1.00f; // -1.0 - disabled
     float   typical_p         = 1.00f; // 1.0 = disabled
     float   temp              = 0.80f; // 1.0 = disabled
     float   smoothing_factor  = 0.00f; // 0.00 = disabled
