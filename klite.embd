@@ -12,7 +12,7 @@ Current version indicated by LITEVER below.
 -->
 
 <script>
-	const LITEVER = 214;
+	const LITEVER = 215;
 	const urlParams = new URLSearchParams(window.location.search);
 	var localflag = true;
 	const STORAGE_PREFIX = (localflag?"e_":"")+"kaihordewebui_";
@@ -11842,7 +11842,7 @@ Current version indicated by LITEVER below.
 		});
 	}
 
-	function clear_poll_flags()
+	function restore_retried_text()
 	{
 		if(retry_in_progress)
 		{
@@ -11857,6 +11857,10 @@ Current version indicated by LITEVER below.
 				}
 			}
 		}
+	}
+	function clear_poll_flags()
+	{
+		restore_retried_text();
 		pending_response_id = "";
 		poll_in_progress = false;
 		synchro_polled_response = null;
@@ -16413,6 +16417,7 @@ Current version indicated by LITEVER below.
 								handle_incoming_text(gentxt, genworker, genmdl, genkudos);
 							}
 						}else{
+							restore_retried_text();
 							retry_preserve_last = false;
 						}
 						synchro_polled_response = null;
@@ -16473,7 +16478,13 @@ Current version indicated by LITEVER below.
 												}
 												else {
 													last_reply_was_empty = (gentxt=="" || gentxt.trim()=="");
+													let was_retry_in_progress = retry_in_progress;
 													handle_incoming_text(gentxt, genworker, genmdl, genkudos);
+													if (gentxt=="" && was_retry_in_progress)
+													{
+														retry_in_progress = was_retry_in_progress;
+														restore_retried_text(); //horde only: this handles the case when the retry returned empty text, we restore the old text
+													}
 												}
 											}
 											render_gametext();
