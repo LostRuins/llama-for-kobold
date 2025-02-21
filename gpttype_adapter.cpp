@@ -1701,7 +1701,6 @@ const std::vector<samplers> & sampler_order, llama_grammar * grammar, float dyna
                     break;
             }
         }
-
         //xtc always last
         sample_xtc(&candidates_p, xtc_threshold, xtc_probability, rng);
         id = sample_token(&candidates_p, rng);
