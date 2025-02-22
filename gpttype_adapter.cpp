@@ -913,7 +913,7 @@ void sample_top_a(llama_token_data_array * candidates, float a, size_t min_keep)
     candidates->size = last_idx;
 }
 
-void sample_xtc(llama_token_data_array * candidates, float xtc_threshold, float xtc_probability, std::mt19937 & rng)
+void sample_xtc(llama_token_data_array * candidates, float xtc_threshold, float xtc_probability, int xtc_round, float xtc_divide, std::mt19937 & rng)
 {
     if (xtc_threshold > 0.5f || xtc_probability <= 0.0f || candidates->size <= 1) {
         return;
@@ -921,46 +921,74 @@ void sample_xtc(llama_token_data_array * candidates, float xtc_threshold, float 
 
     std::uniform_real_distribution<float> dist(0.0f, 1.0f);
     float roll = dist(rng);
-    if(roll>=xtc_probability) //if dice roll fails, skip xtc
+    if(roll>=xtc_probability) // if dice roll fails, skip xtc
     {
         return;
     }
 
     sample_softmax(candidates);
 
-    //calculate how many tokens cross the xtc threshold
+    // calculate how many tokens cross the xtc threshold
     size_t last_idx = candidates->size;
+    size_t sub_idx  = candidates->size;
     for (size_t i = 0; i < candidates->size; ++i) {
-        // Go until we reach a value under the threshold
+        // go until we reach a value under the threshold
         float checkprob = candidates->data[i].p;
         if (checkprob < xtc_threshold) {
             last_idx = i;
+            // if enabled then calculate how many tokens to exclude through division and then round
+            if (xtc_divide > 1.0f) {
+                if (xtc_round < 0) {
+                    sub_idx = static_cast<size_t>(floor(last_idx / xtc_divide));
+                } else if (xtc_round > 0) {
+                    sub_idx = static_cast<size_t>(ceil(last_idx / xtc_divide));
+                } else {
+                    sub_idx = static_cast<size_t>(round(last_idx / xtc_divide));
+                }
+            }
+            // limit sub_idx to prevent no tokens being trimmed
+            if (last_idx > 1 && sub_idx <= 1 && xtc_divide > 1.0f) {
+                sub_idx = 2;
+            }
             break;
         }
     }
 
-    if(last_idx>1) //if there are 2 or more viable candidates
+    if(last_idx>1) // check if there are 2 or more viable candidates
     {
         if (debugmode==1 && !is_quiet) {
             printf("XTC penalties [");
         }
-        // then remove all other tokens above threshold EXCEPT the least likely one
-        for (size_t i = 0; i < last_idx - 1; ++i) {
-            if (debugmode==1 && !is_quiet)
-            {
-                gpt_vocab::id token = candidates->data[i].id;
-                std::string tokenizedstr = FileFormatTokenizeID(token, file_format);
-                ::utreplace(tokenizedstr, "\n", "\\n");
-                printf("%s(%s %.02f%%)", i == 0 ? "" : " ", RemoveBell(tokenizedstr).c_str(), 100.f * candidates->data[i].p);
+        if (xtc_divide > 1.0f) { // if divide is higher than 1
+            // then remove sub_idx amount of tokens
+            for (size_t i = 0; i < sub_idx - 1; ++i) {
+                if (debugmode == 1 && !is_quiet) {
+                    gpt_vocab::id token        = candidates->data[i].id;
+                    std::string   tokenizedstr = FileFormatTokenizeID(token, file_format);
+                    ::utreplace(tokenizedstr, "\n", "\\n");
+                    printf("%s(%s %.02f%%)", i == 0 ? "" : " ", RemoveBell(tokenizedstr).c_str(), 100.f * candidates->data[i].p);
+                }
+                candidates->data[i].logit -=999.0f;  // infinity gets wonky results downstream, this hack works well enough
             }
-            candidates->data[i].logit -= 999.0f; //infinity gets wonky results downstream, this hack works well enough
+        }
+        else { // otherwise xtc sticks to default trimming behaviour
+            // remove all other tokens above threshold EXCEPT the least likely one
+            for (size_t i = 0; i < last_idx - 1; ++i) {
+                if (debugmode == 1 && !is_quiet) {
+                    gpt_vocab::id token        = candidates->data[i].id;
+                    std::string   tokenizedstr = FileFormatTokenizeID(token, file_format);
+                    ::utreplace(tokenizedstr, "\n", "\\n");
+                    printf("%s(%s %.02f%%)", i == 0 ? "" : " ", RemoveBell(tokenizedstr).c_str(), 100.f * candidates->data[i].p);
+                }
+                candidates->data[i].logit -= 999.0f;  // infinity gets wonky results downstream, this hack works well enough
+            }
         }
         if (debugmode==1 && !is_quiet) {
             printf("]\n");
         }
         candidates->sorted = false;
 
-    }  //otherwise xtc does not do anything
+    }  // otherwise xtc does not do anything
 
     // printf("\n\nCandidates: %d, Threshold: %f, LastIdx: %d",candidates->size,xtc_threshold,last_idx);
     // printf("\nCandidates: %f %f %f %f\n",candidates->data[0].p,candidates->data[1].p,candidates->data[2].p,candidates->data[3].p);
