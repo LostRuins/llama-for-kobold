@@ -12,7 +12,7 @@ Current version indicated by LITEVER below.
 -->
 
 <script>
-	const LITEVER = 217;
+	const LITEVER = 218;
 	const urlParams = new URLSearchParams(window.location.search);
 	var localflag = true;
 	const STORAGE_PREFIX = (localflag?"e_":"")+"kaihordewebui_";
@@ -3170,6 +3170,8 @@ Current version indicated by LITEVER below.
 		dry_sequence_breakers: ["\n", ":", "\"", "*"],
 		xtc_threshold: 0.2,
 		xtc_probability: 0.0,
+        xtc_round: 0,
+        xtc_divide: 1.0,
 		sampler_order: [6, 0, 1, 3, 4, 2, 5],
 	};
 
@@ -10630,6 +10632,8 @@ Current version indicated by LITEVER below.
 		document.getElementById("dry_multiplier").value = localsettings.dry_multiplier;
 		document.getElementById("xtc_threshold").value = localsettings.xtc_threshold;
 		document.getElementById("xtc_probability").value = localsettings.xtc_probability;
+        document.getElementById("xtc_round").value = localsettings.xtc_round;
+        document.getElementById("xtc_divide").value = localsettings.xtc_divide;
 		document.getElementById("dry_base").value = localsettings.dry_base;
 		document.getElementById("dry_allowed_length").value = localsettings.dry_allowed_length;
 		document.getElementById("token_count_multiplier").value = localsettings.token_count_multiplier;
@@ -11073,6 +11077,8 @@ Current version indicated by LITEVER below.
 		localsettings.custom_jailbreak_text = pendingassistantjailbreak;
 		localsettings.xtc_threshold = parseFloat(document.getElementById("xtc_threshold").value);
 		localsettings.xtc_probability = parseFloat(document.getElementById("xtc_probability").value);
+        localsettings.xtc_round = parseInt(document.getElementById("xtc_round").value);
+        localsettings.xtc_divide = parseFloat(document.getElementById("xtc_divide").value);
 		localsettings.token_count_multiplier = parseInt(document.getElementById("token_count_multiplier").value);
 
 		localsettings.speech_synth = document.getElementById("ttsselect").value;
@@ -11186,6 +11192,8 @@ Current version indicated by LITEVER below.
 		localsettings.dry_allowed_length = cleannum(Math.floor(localsettings.dry_allowed_length), 0, 100);
 		localsettings.xtc_probability = cleannum(localsettings.xtc_probability, 0.0, 1.0);
 		localsettings.xtc_threshold = cleannum(localsettings.xtc_threshold, 0.0, 1.0);
+        localsettings.xtc_round = cleannum(localsettings.xtc_round, -1, 1);
+        localsettings.xtc_divide = cleannum(localsettings.xtc_divide, 1.0, 7.0);
 		localsettings.sampler_seed = cleannum(localsettings.sampler_seed, -1, 999999);
 		localsettings.token_count_multiplier = cleannum(localsettings.token_count_multiplier, 70, 130);
 		toggle_invert_colors();
@@ -14027,6 +14035,8 @@ Current version indicated by LITEVER below.
 		{
 			submit_payload.params.xtc_threshold = localsettings.xtc_threshold;
 			submit_payload.params.xtc_probability = localsettings.xtc_probability;
+            submit_payload.params.xtc_round = localsettings.xtc_round;
+            submit_payload.params.xtc_divide = localsettings.xtc_divide;
 		}
 
 		//presence pen and logit bias for OAI and newer kcpp
@@ -21111,6 +21121,21 @@ Current version indicated by LITEVER below.
 											<div title="XTC Probability" class="justifyleft settingsmall" style="width:100%">Probability</div>
 											<div class="justifyleft settingsmall" style="width:100%">
 											<input title="XTC Probability" class="settinglabel miniinput" type="text" inputmode="decimal" placeholder="0.0" value="0.0" id="xtc_probability"></div>
+										</div>
+										<div class="settinglabel settingcell">
+											<div title="Dyna. XTC Rounding" class="justifyleft settingsmall" style="width:100%">Rounding</div>
+											<div class="justifyleft settingsmall" style="width:100%">
+											<select title="Dyna. XTC Rounding" style="padding:1px; height:auto; appearance: none; font-size: 7pt;" class="form-control" id="xtc_rounding">
+												<option value="0">Closest</option>
+												<option value="1">Ceil</option>
+												<option value="-1">Floor</option>
+											</select>
+											</div>
+										</div>
+										<div class="settinglabel settingcell">
+											<div title="Dyna. XTC Division. Set > 1 to acivate Dyna mode." class="justifyleft settingsmall" style="width:100%">Division</div>
+											<div class="justifyleft settingsmall" style="width:100%">
+											<input title="Dyna. XTC Division Set > 1 to activate Dyna mode." class="settinglabel miniinput" type="text" inputmode="decimal" placeholder="0.0" value="0.0" id="xtc_divide"></div>
 										</div>
 									</div>
 									<div id="xtcunsupporteddiv" class="color_red" style="font-weight:bold;padding:3px;font-size:12px">XTC Not Supported</div>
