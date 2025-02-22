@@ -204,6 +204,8 @@ class generation_inputs(ctypes.Structure):
                 ("mirostat_eta", ctypes.c_float),
                 ("xtc_threshold", ctypes.c_float),
                 ("xtc_probability", ctypes.c_float),
+                ("xtc_round", ctypes.c_int),
+                ("xtc_divide", ctypes.c_float),
                 ("sampler_order", ctypes.c_int * sampler_order_max),
                 ("sampler_len", ctypes.c_int),
                 ("allow_eos_token", ctypes.c_bool),
@@ -1132,6 +1134,8 @@ def generate(genparams, stream_flag=False):
     dry_sequence_breakers = genparams.get('dry_sequence_breakers', [])
     xtc_threshold = float(genparams.get('xtc_threshold', 0.2))
     xtc_probability = float(genparams.get('xtc_probability', 0))
+    xtc_round = int(genparams.get('xtc_round', 0))
+    xtc_divide = float(genparams.get('xtc_divide', 1.0))
     sampler_order = genparams.get('sampler_order', [6, 0, 1, 3, 4, 2, 5])
     seed = tryparseint(genparams.get('sampler_seed', -1))
     stop_sequence = genparams.get('stop_sequence', [])
@@ -1208,6 +1212,8 @@ def generate(genparams, stream_flag=False):
     inputs.dry_base = dry_base
     inputs.xtc_threshold = xtc_threshold
     inputs.xtc_probability = xtc_probability
+    inputs.xtc_round = xtc_round
+    inputs.xtc_divide = xtc_divide
     inputs.dry_allowed_length = dry_allowed_length
     inputs.dry_penalty_last_n = dry_penalty_last_n
     # Handle dry_sequence_breakers being passed as a json-encoded array of

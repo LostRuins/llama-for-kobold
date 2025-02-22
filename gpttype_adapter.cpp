@@ -1622,7 +1622,7 @@ void sample_grammar(FileFormat file_format, int32_t n_vocab, llama_token_data_ar
 }
 
 int SampleLogits(const float * logits, int n_ctx, int n_vocab, int rep_pen_range, float rep_pen, float rep_pen_slope, float presence_penalty, float top_k, float top_a, float top_p, float min_p, float typical_p, float tfs, float nsigma, float temp, std::mt19937 & rng,
-int mirostat, float mirostat_tau, float mirostat_eta, float dry_multiplier, float dry_base, int dry_allowed_length, int dry_penalty_last_n, float xtc_threshold, float xtc_probability,
+int mirostat, float mirostat_tau, float mirostat_eta, float dry_multiplier, float dry_base, int dry_allowed_length, int dry_penalty_last_n, float xtc_threshold, float xtc_probability, int xtc_round, float xtc_divide,
 const std::vector<samplers> & sampler_order, llama_grammar * grammar, float dynatemp_range, float dynatemp_exponent, float smoothing_factor)
 {
     int id = 0;
@@ -1680,7 +1680,7 @@ const std::vector<samplers> & sampler_order, llama_grammar * grammar, float dyna
             sample_temperature(&candidates_p, temp, smoothing_factor);
         }
         sample_top_n_sigma(&candidates_p, nsigma);
-        sample_xtc(&candidates_p, xtc_threshold, xtc_probability, rng);
+        sample_xtc(&candidates_p, xtc_threshold, xtc_probability, xtc_round, xtc_divide, rng);
         id = sample_token(&candidates_p, rng);
     }
     else
@@ -1730,7 +1730,7 @@ const std::vector<samplers> & sampler_order, llama_grammar * grammar, float dyna
             }
         }
         //xtc always last
-        sample_xtc(&candidates_p, xtc_threshold, xtc_probability, rng);
+        sample_xtc(&candidates_p, xtc_threshold, xtc_probability, xtc_round, xtc_divide, rng);
         id = sample_token(&candidates_p, rng);
     }
 
@@ -3092,6 +3092,8 @@ generation_outputs gpttype_generate(const generation_inputs inputs)
     kcpp_data->dry_penalty_last_n = inputs.dry_penalty_last_n;
     kcpp_data->xtc_threshold = inputs.xtc_threshold;
     kcpp_data->xtc_probability = inputs.xtc_probability;
+    kcpp_data->xtc_round = inputs.xtc_round;
+    kcpp_data->xtc_divide = inputs.xtc_divide;
     kcpp_data->dynatemp_range = inputs.dynatemp_range;
     kcpp_data->dynatemp_exponent = inputs.dynatemp_exponent;
     kcpp_data->n_ctx = inputs.max_context_length;
@@ -3707,7 +3709,7 @@ generation_outputs gpttype_generate(const generation_inputs inputs)
                 top_k, top_a, top_p, min_p, typical_p, tfs_z, nsigma, temp, rng,
                 kcpp_data->mirostat, kcpp_data->mirostat_tau, kcpp_data->mirostat_eta,
                 kcpp_data->dry_multiplier, kcpp_data->dry_base,
-                kcpp_data->dry_allowed_length, kcpp_data->dry_penalty_last_n, kcpp_data->xtc_threshold, kcpp_data->xtc_probability,
+                kcpp_data->dry_allowed_length, kcpp_data->dry_penalty_last_n, kcpp_data->xtc_threshold, kcpp_data->xtc_probability, kcpp_data->xtc_round, kcpp_data->xtc_divide,
                 sampler_order, grammar, dynatemp_range, dynatemp_exponent, smoothing_factor);
 
                 if(draft_used)
