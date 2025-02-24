@@ -92,8 +92,8 @@ struct generation_inputs
     const float mirostat_tau = 0.0f;
     const float xtc_threshold = 0.0f;
     const float xtc_probability = 0.0f;
-    const int xtc_round = 0;
-    const float xtc_divide = 1.0f;
+    const float xtc_ratio = 1.0f;
+    const float xtc_nsigma = 0.0f;
     const samplers sampler_order[KCPP_SAMPLER_MAX] = {};
     const int sampler_len = 0;
     const bool allow_eos_token = false;

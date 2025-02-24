@@ -913,9 +913,9 @@ void sample_top_a(llama_token_data_array * candidates, float a, size_t min_keep)
     candidates->size = last_idx;
 }
 
-void sample_xtc(llama_token_data_array * candidates, float xtc_threshold, float xtc_probability, int xtc_round, float xtc_divide, std::mt19937 & rng)
+void sample_xtc(llama_token_data_array * cur_p, float xtc_threshold, float xtc_probability, float xtc_ratio, float xtc_nsigma, std::unordered_map<llama_token, int> nsig_tokens,  std::mt19937 & rng)
 {
-    if (xtc_threshold > 0.5f || xtc_probability <= 0.0f || candidates->size <= 1) {
+    if (xtc_threshold > 0.5f || xtc_probability <= 0.0f || cur_p->size <= 1) {
         return;
     }
 
@@ -925,33 +925,30 @@ void sample_xtc(llama_token_data_array * candidates, float xtc_threshold, float 
     {
         return;
     }
+    
 
-    sample_softmax(candidates);
+    sample_softmax(cur_p);
 
     // calculate how many tokens cross the xtc threshold
-    size_t last_idx = candidates->size;
-    size_t sub_idx  = candidates->size;
-    for (size_t i = 0; i < candidates->size; ++i) {
-        // go until we reach a value under the threshold
-        float checkprob = candidates->data[i].p;
-        if (checkprob < xtc_threshold) {
-            last_idx = i;
-            // if enabled then calculate how many tokens to exclude through division and then round
-            if (xtc_divide > 1.0f) {
-                if (xtc_round < 0) {
-                    sub_idx = static_cast<size_t>(floor(last_idx / xtc_divide));
-                } else if (xtc_round > 0) {
-                    sub_idx = static_cast<size_t>(ceil(last_idx / xtc_divide));
-                } else {
-                    sub_idx = static_cast<size_t>(round(last_idx / xtc_divide));
+    size_t last_idx = cur_p->size;
+    for (size_t i = 0; i < cur_p->size; ++i) {
+        if (xtc_nsigma <= 0.0f)
+        {
+            // go until we reach a value under the threshold
+            float checkprob = cur_p->data[i].p;
+            if (checkprob < xtc_threshold) {
+                last_idx = i;
+
+                if (xtc_ratio < 1.0f)
+                {
+                    last_idx = static_cast<size_t>(floor(last_idx * xtc_ratio));
                 }
+                break;
             }
-            // limit sub_idx to prevent no tokens being trimmed
-            if (last_idx > 1 && sub_idx <= 1 && xtc_divide > 1.0f) {
-                sub_idx = 2;
-            }
+        } else {
             break;
         }
+
     }
 
     if(last_idx>1) // check if there are 2 or more viable candidates
@@ -959,34 +956,35 @@ void sample_xtc(llama_token_data_array * candidates, float xtc_threshold, float 
         if (debugmode==1 && !is_quiet) {
             printf("XTC penalties [");
         }
-        if (xtc_divide > 1.0f) { // if divide is higher than 1
-            // then remove sub_idx amount of tokens
-            for (size_t i = 0; i < sub_idx - 1; ++i) {
-                if (debugmode == 1 && !is_quiet) {
-                    gpt_vocab::id token        = candidates->data[i].id;
-                    std::string   tokenizedstr = FileFormatTokenizeID(token, file_format);
-                    ::utreplace(tokenizedstr, "\n", "\\n");
-                    printf("%s(%s %.02f%%)", i == 0 ? "" : " ", RemoveBell(tokenizedstr).c_str(), 100.f * candidates->data[i].p);
-                }
-                candidates->data[i].logit -=999.0f;  // infinity gets wonky results downstream, this hack works well enough
-            }
-        }
-        else { // otherwise xtc sticks to default trimming behaviour
+
+        if (xtc_nsigma <= 0.0f) {
             // remove all other tokens above threshold EXCEPT the least likely one
             for (size_t i = 0; i < last_idx - 1; ++i) {
                 if (debugmode == 1 && !is_quiet) {
-                    gpt_vocab::id token        = candidates->data[i].id;
+                    gpt_vocab::id token        = cur_p->data[i].p;
                     std::string   tokenizedstr = FileFormatTokenizeID(token, file_format);
                     ::utreplace(tokenizedstr, "\n", "\\n");
-                    printf("%s(%s %.02f%%)", i == 0 ? "" : " ", RemoveBell(tokenizedstr).c_str(), 100.f * candidates->data[i].p);
+                    printf("%s(%s %.02f%%)", i == 0 ? "" : " ", RemoveBell(tokenizedstr).c_str(),
+                           100.f * cur_p->data[i].p);
                 }
-                candidates->data[i].logit -= 999.0f;  // infinity gets wonky results downstream, this hack works well enough
+                cur_p->data[i].logit -= 999.0f;  // infinity gets wonky results downstream, this hack works well enough
+            }
+        } else {
+            for (size_t i = 0; i < cur_p->size; ++i) {
+                const auto token_in_sigma = nsig_tokens.find(cur_p->data[i].id);
+                bool       in_sigma       = (token_in_sigma != nsig_tokens.end());
+                if (!in_sigma) {
+                    continue;
+                }
+
+                cur_p->data[i].logit -= 999.0f;
             }
         }
+
         if (debugmode==1 && !is_quiet) {
             printf("]\n");
         }
-        candidates->sorted = false;
+        cur_p->sorted = false;
 
     }  // otherwise xtc does not do anything
 
@@ -1488,6 +1486,38 @@ void sample_top_n_sigma(llama_token_data_array * cur_p, float nsigma) {
     sample_softmax(cur_p);
 }
 
+std::unordered_map<llama_token, int> pre_n_sigma(llama_token_data_array * cur_p, float pre_nsigma) {
+    const auto sigma_tokens = cur_p->data;
+
+    // find max logit and calculate mean
+    float nsigmax = cur_p->data[0].logit;
+    float logits_sum = 0;
+    for (size_t i = 0; i < cur_p->size; ++i) {
+        if (cur_p->data[i].logit > nsigmax) {
+            nsigmax = cur_p->data[i].logit;
+        }
+        logits_sum += cur_p->data[i].logit;
+    }
+    float nsigmean = logits_sum / cur_p->size;
+
+    // calculate standard deviation
+    float nsigacc = 0;
+    for (size_t i = 0; i < cur_p->size; ++i) {
+        nsigacc += pow(cur_p->data[i].logit - nsigmean, 2);
+    }
+    float nsigstd = sqrt(nsigacc / cur_p->size);
+
+    //apply mask
+    std::unordered_map<llama_token, int> token_count_sigma;
+    for (size_t i = 0; i < cur_p->size; ++i) {
+        if (cur_p->data[i].logit < nsigmax - (pre_nsigma * nsigstd)) {
+            token_count_sigma[sigma_tokens[i].id]++;
+        }
+    }
+
+    return token_count_sigma;
+}
+
 void sample_entropy(llama_token_data_array * cur_p, float min_temp, float max_temp, float exponent_val, float smoothing_factor) {
     // no need to do anything if there is only one (or zero) candidates
     if (cur_p->size <= 1) {
@@ -1622,11 +1652,12 @@ void sample_grammar(FileFormat file_format, int32_t n_vocab, llama_token_data_ar
 }
 
 int SampleLogits(const float * logits, int n_ctx, int n_vocab, int rep_pen_range, float rep_pen, float rep_pen_slope, float presence_penalty, float top_k, float top_a, float top_p, float min_p, float typical_p, float tfs, float nsigma, float temp, std::mt19937 & rng,
-int mirostat, float mirostat_tau, float mirostat_eta, float dry_multiplier, float dry_base, int dry_allowed_length, int dry_penalty_last_n, float xtc_threshold, float xtc_probability, int xtc_round, float xtc_divide,
+int mirostat, float mirostat_tau, float mirostat_eta, float dry_multiplier, float dry_base, int dry_allowed_length, int dry_penalty_last_n, float xtc_threshold, float xtc_probability, float xtc_ratio, float xtc_nsigma,
 const std::vector<samplers> & sampler_order, llama_grammar * grammar, float dynatemp_range, float dynatemp_exponent, float smoothing_factor)
 {
     int id = 0;
     std::vector<llama_token_data> candidates;
+    std::unordered_map<llama_token, int> pre_nsig;
     candidates.reserve(n_vocab);
     for (llama_token token_id = 0; token_id < n_vocab; token_id++) {
         candidates.emplace_back(llama_token_data{token_id, logits[token_id], 0.0f});
@@ -1679,12 +1710,18 @@ const std::vector<samplers> & sampler_order, llama_grammar * grammar, float dyna
         } else {
             sample_temperature(&candidates_p, temp, smoothing_factor);
         }
+        if (xtc_nsigma > 0.0f) {
+            pre_nsig = pre_n_sigma(&candidates_p, xtc_nsigma);
+        }
         sample_top_n_sigma(&candidates_p, nsigma);
-        sample_xtc(&candidates_p, xtc_threshold, xtc_probability, xtc_round, xtc_divide, rng);
+        sample_xtc(&candidates_p, xtc_threshold, xtc_probability, xtc_ratio, xtc_nsigma, pre_nsig, rng);
         id = sample_token(&candidates_p, rng);
     }
     else
     {
+        if (xtc_nsigma > 0.0f) {
+            pre_nsig = pre_n_sigma(&candidates_p, xtc_nsigma);
+        }
         for (int i = 0; i < sampler_order.size(); i++)
         {
             switch (sampler_order[i])
@@ -1730,7 +1767,7 @@ const std::vector<samplers> & sampler_order, llama_grammar * grammar, float dyna
             }
         }
         //xtc always last
-        sample_xtc(&candidates_p, xtc_threshold, xtc_probability, xtc_round, xtc_divide, rng);
+        sample_xtc(&candidates_p, xtc_threshold, xtc_probability, xtc_ratio, xtc_nsigma, pre_nsig, rng);
         id = sample_token(&candidates_p, rng);
     }
 
@@ -3092,8 +3129,8 @@ generation_outputs gpttype_generate(const generation_inputs inputs)
     kcpp_data->dry_penalty_last_n = inputs.dry_penalty_last_n;
     kcpp_data->xtc_threshold = inputs.xtc_threshold;
     kcpp_data->xtc_probability = inputs.xtc_probability;
-    kcpp_data->xtc_round = inputs.xtc_round;
-    kcpp_data->xtc_divide = inputs.xtc_divide;
+    kcpp_data->xtc_ratio = inputs.xtc_ratio;
+    kcpp_data->xtc_nsigma = inputs.xtc_nsigma;
     kcpp_data->dynatemp_range = inputs.dynatemp_range;
     kcpp_data->dynatemp_exponent = inputs.dynatemp_exponent;
     kcpp_data->n_ctx = inputs.max_context_length;
@@ -3709,7 +3746,7 @@ generation_outputs gpttype_generate(const generation_inputs inputs)
                 top_k, top_a, top_p, min_p, typical_p, tfs_z, nsigma, temp, rng,
                 kcpp_data->mirostat, kcpp_data->mirostat_tau, kcpp_data->mirostat_eta,
                 kcpp_data->dry_multiplier, kcpp_data->dry_base,
-                kcpp_data->dry_allowed_length, kcpp_data->dry_penalty_last_n, kcpp_data->xtc_threshold, kcpp_data->xtc_probability, kcpp_data->xtc_round, kcpp_data->xtc_divide,
+                kcpp_data->dry_allowed_length, kcpp_data->dry_penalty_last_n, kcpp_data->xtc_threshold, kcpp_data->xtc_probability, kcpp_data->xtc_ratio, kcpp_data->xtc_nsigma,
                 sampler_order, grammar, dynatemp_range, dynatemp_exponent, smoothing_factor);
 
                 if(draft_used)
