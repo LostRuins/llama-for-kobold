@@ -940,7 +940,6 @@ void sample_xtc(llama_token_data_array * cur_p, float xtc_threshold, float xtc_p
                 break;
             }
         }
-
     }
 
     if (xtc_nsigma > 0.0f) {
@@ -958,8 +957,6 @@ void sample_xtc(llama_token_data_array * cur_p, float xtc_threshold, float xtc_p
         if (debugmode==1 && !is_quiet) {
             printf("XTC penalties [");
         }
-
-        
         // remove all other tokens above threshold EXCEPT the least likely one
         for (size_t i = 0; i < last_idx - 1; ++i) {
             if (debugmode == 1 && !is_quiet) {
@@ -975,7 +972,6 @@ void sample_xtc(llama_token_data_array * cur_p, float xtc_threshold, float xtc_p
             printf("]\n");
         }
         cur_p->sorted = false;
-
     }  // otherwise xtc does not do anything
 
     // printf("\n\nCandidates: %d, Threshold: %f, LastIdx: %d",candidates->size,xtc_threshold,last_idx);
