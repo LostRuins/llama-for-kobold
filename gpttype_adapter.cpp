@@ -943,33 +943,33 @@ void sample_xtc(llama_token_data_array * cur_p, float xtc_threshold, float xtc_p
 
     }
 
-    if(last_idx>1) // check if there are 2 or more viable candidates
+    if (xtc_nsigma > 0.0f) {
+        for (size_t i = 0; i < cur_p->size; ++i) {
+            const auto token_in_sigma = nsig_tokens.find(cur_p->data[i].id);
+            bool       in_sigma       = (token_in_sigma != nsig_tokens.end());
+            if (!in_sigma) {
+                continue;
+            }
+            cur_p->data[i].logit -= 999.0f;
+        }
+    }
+    else if (last_idx > 1)  // check if there are 2 or more viable candidates
     {
         if (debugmode==1 && !is_quiet) {
             printf("XTC penalties [");
         }
 
-        if (xtc_nsigma > 0.0f) {
-            for (size_t i = 0; i < cur_p->size; ++i) {
-                const auto token_in_sigma = nsig_tokens.find(cur_p->data[i].id);
-                bool in_sigma = (token_in_sigma != nsig_tokens.end());
-                if (!in_sigma) {
-                    continue;
-                }
-                cur_p->data[i].logit -= 999.0f;
+        
+        // remove all other tokens above threshold EXCEPT the least likely one
+        for (size_t i = 0; i < last_idx - 1; ++i) {
+            if (debugmode == 1 && !is_quiet) {
+                gpt_vocab::id token        = cur_p->data[i].p;
+                std::string   tokenizedstr = FileFormatTokenizeID(token, file_format);
+                ::utreplace(tokenizedstr, "\n", "\\n");
+                printf("%s(%s %.02f%%)", i == 0 ? "" : " ", RemoveBell(tokenizedstr).c_str(),
+                       100.f * cur_p->data[i].p);
             }
-        } else {
-            // remove all other tokens above threshold EXCEPT the least likely one
-            for (size_t i = 0; i < last_idx - 1; ++i) {
-                if (debugmode == 1 && !is_quiet) {
-                    gpt_vocab::id token        = cur_p->data[i].p;
-                    std::string   tokenizedstr = FileFormatTokenizeID(token, file_format);
-                    ::utreplace(tokenizedstr, "\n", "\\n");
-                    printf("%s(%s %.02f%%)", i == 0 ? "" : " ", RemoveBell(tokenizedstr).c_str(),
-                           100.f * cur_p->data[i].p);
-                }
-                cur_p->data[i].logit -= 999.0f;  // infinity gets wonky results downstream, this hack works well enough
-            }
+            cur_p->data[i].logit -= 999.0f;  // infinity gets wonky results downstream, this hack works well enough
         }
         if (debugmode==1 && !is_quiet) {
             printf("]\n");
