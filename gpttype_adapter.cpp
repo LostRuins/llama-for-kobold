@@ -925,8 +925,6 @@ void sample_xtc(llama_token_data_array * cur_p, float xtc_threshold, float xtc_p
     {
         return;
     }
-    
-    
     sample_softmax(cur_p);
 
     // calculate how many tokens cross the xtc threshold
@@ -973,7 +971,6 @@ void sample_xtc(llama_token_data_array * cur_p, float xtc_threshold, float xtc_p
                 cur_p->data[i].logit -= 999.0f;  // infinity gets wonky results downstream, this hack works well enough
             }
         }
-
         if (debugmode==1 && !is_quiet) {
             printf("]\n");
         }
