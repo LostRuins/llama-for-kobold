@@ -913,54 +913,65 @@ void sample_top_a(llama_token_data_array * candidates, float a, size_t min_keep)
     candidates->size = last_idx;
 }
 
-void sample_xtc(llama_token_data_array * candidates, float xtc_threshold, float xtc_probability, std::mt19937 & rng)
+void sample_xtc(llama_token_data_array * cur_p, float xtc_threshold, float xtc_probability, float xtc_nsigma, std::unordered_map<llama_token, int> nsig_tokens,  std::mt19937 & rng)
 {
-    if (xtc_threshold > 0.5f || xtc_probability <= 0.0f || candidates->size <= 1) {
+    if (xtc_threshold > 0.5f || xtc_probability <= 0.0f || cur_p->size <= 1 || (xtc_nsigma > 0.0f && nsig_tokens.size() <= 1)) {
         return;
     }
 
     std::uniform_real_distribution<float> dist(0.0f, 1.0f);
     float roll = dist(rng);
-    if(roll>=xtc_probability) //if dice roll fails, skip xtc
+    if(roll>=xtc_probability) // if dice roll fails, skip xtc
     {
         return;
     }
+    sample_softmax(cur_p);
 
-    sample_softmax(candidates);
-
-    //calculate how many tokens cross the xtc threshold
-    size_t last_idx = candidates->size;
-    for (size_t i = 0; i < candidates->size; ++i) {
-        // Go until we reach a value under the threshold
-        float checkprob = candidates->data[i].p;
-        if (checkprob < xtc_threshold) {
-            last_idx = i;
+    // calculate how many tokens cross the xtc threshold
+    size_t last_idx = cur_p->size;
+    for (size_t i = 0; i < cur_p->size; ++i) {
+        if (xtc_nsigma > 0.0f) {
             break;
+        } else {
+            // go until we reach a value under the threshold
+            float checkprob = cur_p->data[i].p;
+            if (checkprob < xtc_threshold) {
+                last_idx = i;
+                break;
+            }
         }
     }
 
-    if(last_idx>1) //if there are 2 or more viable candidates
+    if (xtc_nsigma > 0.0f) {
+        for (size_t i = 0; i < cur_p->size; ++i) {
+            const auto token_in_sigma = nsig_tokens.find(cur_p->data[i].id);
+            bool in_sigma = (token_in_sigma != nsig_tokens.end());
+            if (!in_sigma) {
+                continue;
+            }
+            cur_p->data[i].logit -= 999.0f;
+        }
+    }
+    else if (last_idx > 1)  // check if there are 2 or more viable candidates
     {
         if (debugmode==1 && !is_quiet) {
             printf("XTC penalties [");
         }
-        // then remove all other tokens above threshold EXCEPT the least likely one
+        // remove all other tokens above threshold EXCEPT the least likely one
         for (size_t i = 0; i < last_idx - 1; ++i) {
-            if (debugmode==1 && !is_quiet)
-            {
-                gpt_vocab::id token = candidates->data[i].id;
+            if (debugmode == 1 && !is_quiet) {
+                gpt_vocab::id token = cur_p->data[i].p;
                 std::string tokenizedstr = FileFormatTokenizeID(token, file_format);
                 ::utreplace(tokenizedstr, "\n", "\\n");
-                printf("%s(%s %.02f%%)", i == 0 ? "" : " ", RemoveBell(tokenizedstr).c_str(), 100.f * candidates->data[i].p);
+                printf("%s(%s %.02f%%)", i == 0 ? "" : " ", RemoveBell(tokenizedstr).c_str(), 100.f * cur_p->data[i].p);
             }
-            candidates->data[i].logit -= 999.0f; //infinity gets wonky results downstream, this hack works well enough
+            cur_p->data[i].logit -= 999.0f;  // infinity gets wonky results downstream, this hack works well enough
         }
         if (debugmode==1 && !is_quiet) {
             printf("]\n");
         }
-        candidates->sorted = false;
-
-    }  //otherwise xtc does not do anything
+        cur_p->sorted = false;
+    }  // otherwise xtc does not do anything
 
     // printf("\n\nCandidates: %d, Threshold: %f, LastIdx: %d",candidates->size,xtc_threshold,last_idx);
     // printf("\nCandidates: %f %f %f %f\n",candidates->data[0].p,candidates->data[1].p,candidates->data[2].p,candidates->data[3].p);
@@ -1460,7 +1471,39 @@ void sample_top_n_sigma(llama_token_data_array * cur_p, float nsigma) {
     sample_softmax(cur_p);
 }
 
-void sample_entropy(llama_token_data_array * cur_p, float min_temp, float max_temp, float exponent_val, float smoothing_factor) {
+std::unordered_map<llama_token, int> exclude_n_sigma(llama_token_data_array * cur_p, float xtc_nsigma) {
+    const llama_token_data * sigma_tokens = cur_p->data;
+
+    // find max logit and calculate mean
+    float nsigmax = cur_p->data[0].logit;
+    float logits_sum = 0;
+    for (size_t i = 0; i < cur_p->size; ++i) {
+        if (cur_p->data[i].logit > nsigmax) {
+            nsigmax = cur_p->data[i].logit;
+        }
+        logits_sum += cur_p->data[i].logit;
+    }
+    float nsigmean = logits_sum / cur_p->size;
+
+    // calculate standard deviation
+    float nsigacc = 0;
+    for (size_t i = 0; i < cur_p->size; ++i) {
+        nsigacc += pow(cur_p->data[i].logit - nsigmean, 2);
+    }
+    float nsigstd = sqrt(nsigacc / cur_p->size);
+
+    //apply mask
+    std::unordered_map<llama_token, int> token_count_sigma;
+    for (size_t i = 0; i < cur_p->size; ++i) {
+        if (cur_p->data[i].logit > nsigmax - (xtc_nsigma * nsigstd)) {
+            token_count_sigma[sigma_tokens[i].id]++;
+        }
+    }
+
+    return token_count_sigma;
+}
+
+void sample_entropy(llama_token_data_array * cur_p, float min_temp, float max_temp, float exponent_val) {
     // no need to do anything if there is only one (or zero) candidates
     if (cur_p->size <= 1) {
         return;
@@ -1505,51 +1548,46 @@ void sample_entropy(llama_token_data_array * cur_p, float min_temp, float max_te
         cur_p->data[i].p /= cum_sum_double; // Re-normalize the probabilities
     }
 
+}
+
+void sample_temperature(llama_token_data_array * cur_p, float temp)
+{
+    bool isgreedy = false;
+    if (temp <= 0)
+    {
+        // imitate greedy sampling
+        temp = 0.00390625f; // Cannot be zero else div0. This is 1/256
+        isgreedy = true;
+    }
+
+    for (size_t i = 0; i < cur_p->size; ++i) {
+        cur_p->data[i].logit /= temp;
+    }
+
+    if(isgreedy)
+    {
+        sample_top_k(cur_p, 1); // only want first candidate
+    }
+}
+
+void sample_smooth(llama_token_data_array* cur_p, float smoothing_factor)
+{
+    // no need to do anything if there is only one (or zero) candidates
+    if (cur_p->size <= 1) {
+        return;
+    }
+
     // Only apply smoothing if smoothing_factor is > 0. Do not change base implementation otherwise.
     if (smoothing_factor > 0 && cur_p->size > 1) {
         sample_softmax(cur_p);
-        float h = cur_p->data[0].logit; // Find the maximum logit for h to be added after the transformation
-        // Apply quadratic transformation using the smoothing_factor
+        float h = cur_p->data[0].logit;  // find the maximum logit for h to be added after the transformation
+        // apply quadratic transformation using the smoothing_factor
         for (size_t i = 0; i < cur_p->size; ++i)
         {
             float logit_shifted = cur_p->data[i].logit - h;
             cur_p->data[i].logit = -smoothing_factor * logit_shifted * logit_shifted + h;
         }
         sample_softmax(cur_p);
-    }
-
-}
-
-void sample_temperature(llama_token_data_array * candidates_p, float temp, float smoothing_factor)
-{
-    bool isgreedy = false;
-    if (temp <= 0)
-    {
-        // Imitate greedy sampling
-        temp = 0.00390625f; //cannot be zero else div0, this is 1/256
-        smoothing_factor = 0;
-        isgreedy = true;
-    }
-
-    for (size_t i = 0; i < candidates_p->size; ++i) {
-        candidates_p->data[i].logit /= temp;
-    }
-    // Only apply smoothing if smoothing_factor is > 0. Do not change base implementation otherwise.
-    if (smoothing_factor > 0 && candidates_p->size > 1) {
-        sample_softmax(candidates_p);
-        float h = candidates_p->data[0].logit; // Find the maximum logit for h to be added after the transformation
-        // Apply quadratic transformation using the smoothing_factor
-        for (size_t i = 0; i < candidates_p->size; ++i)
-        {
-            float logit_shifted = candidates_p->data[i].logit - h;
-            candidates_p->data[i].logit = -smoothing_factor * logit_shifted * logit_shifted + h;
-        }
-        sample_softmax(candidates_p);
-    }
-
-    if(isgreedy)
-    {
-        sample_top_k(candidates_p, 1); //only want first candidate
     }
 }
 
@@ -1594,11 +1632,12 @@ void sample_grammar(FileFormat file_format, int32_t n_vocab, llama_token_data_ar
 }
 
 int SampleLogits(const float * logits, int n_ctx, int n_vocab, int rep_pen_range, float rep_pen, float rep_pen_slope, float presence_penalty, float top_k, float top_a, float top_p, float min_p, float typical_p, float tfs, float nsigma, float temp, std::mt19937 & rng,
-int mirostat, float mirostat_tau, float mirostat_eta, float dry_multiplier, float dry_base, int dry_allowed_length, int dry_penalty_last_n, float xtc_threshold, float xtc_probability,
+int mirostat, float mirostat_tau, float mirostat_eta, float dry_multiplier, float dry_base, int dry_allowed_length, int dry_penalty_last_n, float xtc_threshold, float xtc_probability, float xtc_nsigma,
 const std::vector<samplers> & sampler_order, llama_grammar * grammar, float dynatemp_range, float dynatemp_exponent, float smoothing_factor)
 {
     int id = 0;
     std::vector<llama_token_data> candidates;
+    std::unordered_map<llama_token, int> xtc_nsig_tokens;
     candidates.reserve(n_vocab);
     for (llama_token token_id = 0; token_id < n_vocab; token_id++) {
         candidates.emplace_back(llama_token_data{token_id, logits[token_id], 0.0f});
@@ -1622,12 +1661,13 @@ const std::vector<samplers> & sampler_order, llama_grammar * grammar, float dyna
     //prefilter to top 3k tokens for improved speed
     sample_top_k(&candidates_p, 3000);
 
-    if (mirostat == 1 || mirostat == 2)
+    if (mirostat == 1 || mirostat == 2) // mirostat chain
     {
         static float mirostat_mu = 2.0f * mirostat_tau;
         const int mirostat_m = 100;
         sample_rep_pen(n_ctx, rep_pen_range, rep_pen, rep_pen_slope, presence_penalty, &candidates_p);
-        sample_temperature(&candidates_p, temp, smoothing_factor);
+        sample_temperature(&candidates_p, temp);
+        sample_smooth(&candidates_p, smoothing_factor);
         if (mirostat == 1)
         {
             id = sample_token_mirostat(n_vocab, &candidates_p, rng, mirostat_tau, mirostat_eta, mirostat_m, &mirostat_mu);
@@ -1637,7 +1677,7 @@ const std::vector<samplers> & sampler_order, llama_grammar * grammar, float dyna
             id = sample_token_mirostat_v2(&candidates_p, rng, mirostat_tau, mirostat_eta, &mirostat_mu);
         }
     }
-    else if (nsigma > 0.0f)
+    else if (nsigma > 0.0f) // top n sigma chain
     {
         sample_top_k(&candidates_p, top_k);
         if (dynatemp_range > 0) {
@@ -1647,15 +1687,66 @@ const std::vector<samplers> & sampler_order, llama_grammar * grammar, float dyna
             dynatemp_min       = dynatemp_min < 0 ? 0 : dynatemp_min;
             dynatemp_max       = dynatemp_max < 0 ? 0 : dynatemp_max;
             dynatemp_exponent  = dynatemp_exponent < 0 ? 0 : dynatemp_exponent;
-            sample_entropy(&candidates_p, dynatemp_min, dynatemp_max, dynatemp_exponent, smoothing_factor);
+            sample_entropy(&candidates_p, dynatemp_min, dynatemp_max, dynatemp_exponent);
         } else {
-            sample_temperature(&candidates_p, temp, smoothing_factor);
+            sample_temperature(&candidates_p, temp);
+        }
+        if (xtc_nsigma > 0.0f) {
+            xtc_nsig_tokens = exclude_n_sigma(&candidates_p, xtc_nsigma);
         }
         sample_top_n_sigma(&candidates_p, nsigma);
-        sample_xtc(&candidates_p, xtc_threshold, xtc_probability, rng);
+        sample_smooth(&candidates_p, smoothing_factor);
+        sample_xtc(&candidates_p, xtc_threshold, xtc_probability, xtc_nsigma, xtc_nsig_tokens, rng);
         id = sample_token(&candidates_p, rng);
     }
-    else
+    else if (xtc_nsigma > 0.0f) // dyna xtc chain
+    {
+        sample_top_k(&candidates_p, top_k);
+        if (dynatemp_range > 0) {
+            float dynatemp_min = temp - dynatemp_range;
+            float dynatemp_max = temp + dynatemp_range;
+            //do not allow negative values
+            dynatemp_min       = dynatemp_min < 0 ? 0 : dynatemp_min;
+            dynatemp_max       = dynatemp_max < 0 ? 0 : dynatemp_max;
+            dynatemp_exponent  = dynatemp_exponent < 0 ? 0 : dynatemp_exponent;
+            sample_entropy(&candidates_p, dynatemp_min, dynatemp_max, dynatemp_exponent);
+        } else {
+            sample_temperature(&candidates_p, temp);
+        }
+        xtc_nsig_tokens = exclude_n_sigma(&candidates_p, xtc_nsigma);
+
+        for (int i = 0; i < sampler_order.size(); i++) {
+            switch (sampler_order[i]) {
+                case KCPP_SAMPLER_TOP_K:
+                    break;
+                case KCPP_SAMPLER_TOP_A:
+                    sample_top_a(&candidates_p, top_a, 1);
+                    break;
+                case KCPP_SAMPLER_TOP_P:
+                    sample_top_p(&candidates_p, top_p, 1);
+                    sample_min_p(&candidates_p, min_p, 1);
+                    break;
+                case KCPP_SAMPLER_TFS:
+                    sample_tail_free(&candidates_p, tfs, 1);
+                    break;
+                case KCPP_SAMPLER_TYP:
+                    sampler_typical(&candidates_p, typical_p, 1);
+                    break;
+                case KCPP_SAMPLER_TEMP:
+                    sample_smooth(&candidates_p, smoothing_factor);
+                    break;
+                case KCPP_SAMPLER_REP_PEN:
+                    sample_rep_pen(n_ctx, rep_pen_range, rep_pen, rep_pen_slope, presence_penalty, &candidates_p);
+                    break;
+                default:
+                    printf("\nSampleLogits: Unknown Sampler : %d", sampler_order[i]);
+                    break;
+            }
+        }
+        sample_xtc(&candidates_p, xtc_threshold, xtc_probability, xtc_nsigma, xtc_nsig_tokens, rng);
+        id = sample_token(&candidates_p, rng);
+    }
+    else // custom chain
     {
         for (int i = 0; i < sampler_order.size(); i++)
         {
@@ -1686,12 +1777,13 @@ const std::vector<samplers> & sampler_order, llama_grammar * grammar, float dyna
                         dynatemp_min = dynatemp_min<0?0:dynatemp_min;
                         dynatemp_max = dynatemp_max<0?0:dynatemp_max;
                         dynatemp_exponent = dynatemp_exponent<0?0:dynatemp_exponent;
-                        sample_entropy(&candidates_p, dynatemp_min, dynatemp_max, dynatemp_exponent, smoothing_factor);
+                        sample_entropy(&candidates_p, dynatemp_min, dynatemp_max, dynatemp_exponent);
                     }
                     else
                     {
-                        sample_temperature(&candidates_p, temp, smoothing_factor);
+                        sample_temperature(&candidates_p, temp);
                     }
+                    sample_smooth(&candidates_p, smoothing_factor);
                     break;
                 case KCPP_SAMPLER_REP_PEN:
                     sample_rep_pen(n_ctx, rep_pen_range, rep_pen, rep_pen_slope, presence_penalty, &candidates_p);
@@ -1702,7 +1794,7 @@ const std::vector<samplers> & sampler_order, llama_grammar * grammar, float dyna
             }
         }
         //xtc always last
-        sample_xtc(&candidates_p, xtc_threshold, xtc_probability, rng);
+        sample_xtc(&candidates_p, xtc_threshold, xtc_probability, xtc_nsigma, xtc_nsig_tokens, rng);
         id = sample_token(&candidates_p, rng);
     }
 
@@ -3064,6 +3156,7 @@ generation_outputs gpttype_generate(const generation_inputs inputs)
     kcpp_data->dry_penalty_last_n = inputs.dry_penalty_last_n;
     kcpp_data->xtc_threshold = inputs.xtc_threshold;
     kcpp_data->xtc_probability = inputs.xtc_probability;
+    kcpp_data->xtc_nsigma = inputs.xtc_nsigma;
     kcpp_data->dynatemp_range = inputs.dynatemp_range;
     kcpp_data->dynatemp_exponent = inputs.dynatemp_exponent;
     kcpp_data->n_ctx = inputs.max_context_length;
@@ -3679,7 +3772,7 @@ generation_outputs gpttype_generate(const generation_inputs inputs)
                 top_k, top_a, top_p, min_p, typical_p, tfs_z, nsigma, temp, rng,
                 kcpp_data->mirostat, kcpp_data->mirostat_tau, kcpp_data->mirostat_eta,
                 kcpp_data->dry_multiplier, kcpp_data->dry_base,
-                kcpp_data->dry_allowed_length, kcpp_data->dry_penalty_last_n, kcpp_data->xtc_threshold, kcpp_data->xtc_probability,
+                kcpp_data->dry_allowed_length, kcpp_data->dry_penalty_last_n, kcpp_data->xtc_threshold, kcpp_data->xtc_probability, kcpp_data->xtc_nsigma,
                 sampler_order, grammar, dynatemp_range, dynatemp_exponent, smoothing_factor);
 
                 if(draft_used)
