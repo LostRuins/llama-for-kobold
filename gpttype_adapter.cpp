@@ -1707,7 +1707,7 @@ const std::vector<samplers> & sampler_order, llama_grammar * grammar, float dyna
             xtc_nsig_tokens = exclude_n_sigma(&candidates_p, xtc_nsigma);
         }
         sample_top_n_sigma(&candidates_p, nsigma);
-        sample_xtc(&candidates_p, xtc_threshold, xtc_probability, xtc_ratio, xtc_nsigma, pre_nsig, rng);
+        sample_xtc(&candidates_p, xtc_threshold, xtc_probability, xtc_nsigma, xtc_nsig_tokens, rng);
         id = sample_token(&candidates_p, rng);
     }
     else if (xtc_nsigma > 0.0f) // dyna xtc chain
