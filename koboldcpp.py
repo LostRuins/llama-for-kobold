@@ -17,6 +17,7 @@ import re
 import argparse
 import platform
 import base64
+from sqlite3 import Cursor
 import struct
 import json
 import sys
@@ -52,7 +53,7 @@ dry_seq_break_max = 128
 KcppVersion = "1.85"
 showdebug = True
 kcpp_instance = None #global running instance
-global_memory = {"tunnel_url": "", "restart_target":"", "input_to_exit":False, "load_complete":False}
+global_memory = {"tunnel_url": "", "restart_target":"", "input_to_exit":False, "load_complete":False, "restart_model": "", "currentConfig": None, "modelOverride": None, "currentModel": None}
 using_gui_launcher = False
 
 handle = None
@@ -124,6 +125,8 @@ VKDevicesNames = ["","","",""]
 VKIsDGPU = [0,0,0,0]
 MaxMemory = [0]
 MaxFreeMemory = [0]
+
+configAfterRestart = ""
 
 class logit_bias(ctypes.Structure):
     _fields_ = [("token_id", ctypes.c_int32),
@@ -1994,6 +1997,234 @@ def LaunchWebbrowser(target_url, failedmsg):
             print(failedmsg)
             print(f"Please manually open your browser to {target_url}")
 
+def getDBPath():
+    return os.path.join(args.admindatadir, "kcpp.db")
+
+dataMetadata = {}
+def refreshDataMetadata():
+    global dataMetadata
+    rows = fetchAllToDictArr(sql="select category, id, name, isPublic from saveMetadata", columnsInSelect=["category", "id", "name", "isPublic"])
+    dataMetadata = {}
+    for row in rows:
+        if not row["category"] in dataMetadata:
+            dataMetadata[row["category"]] = {}
+        dataMetadata[row["category"]][row["name"]] = row
+
+def getDataMetadata(category, name):
+    if category in dataMetadata:
+        if name in dataMetadata[category]:
+            return dataMetadata[category][name]
+    return None
+
+firstRun = True
+# Prepares the DB used to store server side data for first use based on the DB path
+def prepDataDB():
+    import sqlite3
+    with sqlite3.connect(getDBPath()) as con:
+        try:
+            global firstRun
+            if not firstRun:
+                return
+            
+            cursor = con.cursor()
+
+            # Adds missing tables
+            result = cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='saveData';").fetchall()
+            if result == []:
+                sql = """CREATE TABLE IF NOT EXISTS saveData (
+                    id INTEGER PRIMARY KEY,
+                    name NVARCHAR NOT NULL,
+                    encodedSave NVARCHAR NOT NULL
+                );"""
+                cursor.execute(sql)
+                
+            result = cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='saveType';").fetchall()
+            if result == []:
+                sql = """CREATE TABLE IF NOT EXISTS saveType (
+                    id INTEGER PRIMARY KEY,
+                    typeName NVARCHAR NOT NULL
+                );        
+                """
+                cursor.execute(sql)
+
+                sql = """INSERT INTO saveType(typeName)
+                VALUES ('General'), ('Save'), ('Character card'), ('Scenarios');
+                """
+                cursor.execute(sql)
+
+                sql = """ALTER TABLE saveData 
+                ADD COLUMN typeId INTEGER NOT NULL DEFAULT 0;
+                """
+                cursor.execute(sql)
+
+                sql = """UPDATE saveData SET typeId = 2;
+                """
+                cursor.execute(sql)
+
+            result = cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='savePreviews';").fetchall()
+            if result == []:
+                sql = """CREATE TABLE IF NOT EXISTS savePreviews (
+                    id INTEGER PRIMARY KEY,
+                    previewContent NVARCHAR NOT NULL
+                );
+                """
+                cursor.execute(sql)
+
+                sql = """ALTER TABLE saveData 
+                ADD COLUMN previewId INTEGER NULL DEFAULT NULL;
+                """
+                cursor.execute(sql)
+
+            # And adds new columns
+            result = cursor.execute("SELECT * FROM pragma_table_info('saveData') WHERE name='isEncrypted';").fetchall()
+            if result == []:
+                sql = """ALTER TABLE saveData 
+                ADD COLUMN isEncrypted INTEGER NOT NULL DEFAULT 0;
+                """
+                cursor.execute(sql)
+
+            result = cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='saveGroup';").fetchall()
+            if result == []:
+                sql = """CREATE TABLE IF NOT EXISTS saveGroup (
+                    id INTEGER PRIMARY KEY,
+                    groupName NVARCHAR NOT NULL,
+                    isPublic INTEGER NOT NULL DEFAULT 0
+                );        
+                """
+                cursor.execute(sql)
+
+                sql = """ALTER TABLE saveData 
+                ADD COLUMN groupId INTEGER NULL DEFAULT NULL;
+                """
+                cursor.execute(sql)
+
+                sql = """INSERT INTO saveGroup(groupName, isPublic)
+                VALUES ('Public (can be accessed by anybody)', 1);
+                """
+                cursor.execute(sql)
+
+            # Remake views
+            sql = "drop view if exists saveOverview;"
+            cursor.execute(sql)
+
+            sql = """create view saveOverview
+            as
+            select name, encodedSave, isEncrypted, typeName, previewContent, groupName, isPublic
+            from saveData d
+            left join saveType t
+            on d.typeId = t.id
+            left join savePreviews p
+            on d.previewId = p.id
+            left join saveGroup g
+            on d.groupId = g.id;
+            """
+            cursor.execute(sql)
+
+            sql = "drop view if exists saveMetadata;"
+            cursor.execute(sql)
+
+            sql = """create view saveMetadata
+            as
+            select 'type' as category, id, typeName as name, null as isPublic
+            from saveType t
+            union all
+            select 'group', id, groupName, isPublic
+            from saveGroup g;
+            """
+            cursor.execute(sql)
+
+            firstRun = False
+        # Handle errors
+        except sqlite3.Error as error:
+            print(f'Error occurred - {error}')
+
+# Fetches data from the DB and remaps the row to the provided columns (supports prepared statements)
+def fetchAllToDictArr(sql, args = [], columnsInSelect = []):
+    import sqlite3
+    prepDataDB()
+    with sqlite3.connect(getDBPath()) as con:
+        try:
+            cursor = con.cursor()           
+            result = cursor.execute(sql, args).fetchall()
+            cursor.close()
+            
+            rows = []
+            for row in result:
+                rowOut = {}
+                for i in range(min(len(row), len(columnsInSelect))):
+                    rowOut[columnsInSelect[i]] = row[i]
+                rows.append(rowOut)
+            return rows
+        # Handle errors
+        except sqlite3.Error as error:
+            print(f'Error occurred - {error}')
+
+# Gets saves and metadata from the DB, based on the where clause provided
+def getSaves(whereClause = "", whereArgs = []):
+    prepDataDB()
+    cols = ["name", "isEncrypted", "typeName", "previewContent", "groupName", "isPublic"]
+    saves = fetchAllToDictArr(f"select name, isEncrypted, typeName, previewContent, groupName, isPublic from saveOverview {whereClause}", whereArgs, cols)
+    savesOut = {}
+    if saves is not None:
+        for save in saves:
+            savesOut[save["name"]] = save
+    return savesOut
+
+# Gets the save data itself along with the names from the DB
+def getSaveData(whereClause = "", whereArgs = []):
+    prepDataDB()
+    cols = ["name", "encodedSave"]
+    saves = fetchAllToDictArr(f"select name, encodedSave from saveOverview {whereClause}", whereArgs, cols)
+    savesOut = {}
+    if saves is not None:
+        for save in saves:
+            savesOut[save["name"]] = save
+    return savesOut
+        
+# Executes an insert on the data DB (based on the table name and a dict which sets the keys and values)
+def executeInsertFromDict(tableName, rowData):
+    import sqlite3
+    prepDataDB()
+    with sqlite3.connect(getDBPath()) as con:
+        try:
+            cursor = con.cursor()
+            cols = []
+            placeholders = []
+            vals = []
+            for col in rowData:
+                if rowData[col] is not None:
+                    cols.append(col)
+                    placeholders.append("?")
+                    vals.append(rowData[col])
+                            
+            sql = f"INSERT INTO {tableName} ({','.join(cols)}) VALUES ({','.join(placeholders)});"
+            cursor.execute(sql, vals)
+            newId = cursor.lastrowid
+            cursor.close()
+            return newId
+        # Handle errors
+        except sqlite3.Error as error:
+            print(f'Error occurred - {error}')
+            return False
+        
+# Deletes a save from the relevant DB tables
+def deleteSave(saveName):
+    import sqlite3
+    prepDataDB()
+    with sqlite3.connect(getDBPath()) as con:
+        try:
+            cursor = con.cursor()
+            previewId = cursor.execute(f"select previewId from saveData where name = ?", [saveName]).fetchone()
+            if (previewId is not None and previewId[0] is not None):
+                cursor.execute(f"DELETE FROM savePreviews WHERE id = ?;", [previewId[0]])
+            cursor.execute(f"DELETE FROM saveData WHERE name = ?;", [saveName])
+            cursor.close()
+            return True
+        # Handle errors
+        except sqlite3.Error as error:
+            print(f'Error occurred - {error}')
+            return False
+
 #################################################################
 ### A hacky simple HTTP server simulating a kobold api by Concedo
 ### we are intentionally NOT using flask, because we want MINIMAL dependencies
@@ -2409,11 +2640,22 @@ Enter Prompt:<br>
             caps = get_capabilities()
             response_body = (json.dumps(caps).encode())
 
-        elif self.path.endswith(('/api/admin/list_options')): #used by admin to get info about a kcpp instance
+        elif self.path=="/api/admin/health": # Endpoint to allow pings to check if the server is up and opterational
+            content_type = 'text/plain'
+            response_body = ("true").encode()
+
+        elif self.path.endswith(('/api/admin/list_options')): #used by admin to get configs supported by a kcpp instance
             opts = []
             if args.admin and args.admindir and os.path.exists(args.admindir) and self.check_header_password(args.adminpassword):
                 dirpath = os.path.abspath(args.admindir)
                 opts = [f for f in sorted(os.listdir(dirpath)) if (f.endswith(".kcpps") or f.endswith(".kcppt")) and os.path.isfile(os.path.join(dirpath, f))]
+            response_body = (json.dumps(opts).encode())
+
+        elif self.path.endswith(('/api/admin/list_models')): #used by admin to get models which can be reloaded with
+            opts = []
+            if args.admin and args.admintextmodelsdir and os.path.exists(args.admintextmodelsdir) and self.check_header_password(args.adminpassword):
+                dirpath = os.path.abspath(args.admintextmodelsdir)
+                opts = [f for f in os.listdir(dirpath) if f.endswith(".gguf") and os.path.isfile(os.path.join(dirpath, f))]
             response_body = (json.dumps(opts).encode())
 
         elif self.path.endswith(('/api/extra/perf')):
@@ -2531,6 +2773,30 @@ Enter Prompt:<br>
                 response_body = (json.dumps({}).encode())
             else:
                 response_body = preloaded_story
+
+        elif self.path=="/api/admin/current_model": # Returns the current model loaded
+            if not args.admin:
+                response_body = ("Admin API disabled").encode()
+            elif not self.check_header_password(args.adminpassword):
+                return
+            else:
+                content_type = 'text/plain'
+                if global_memory["currentModel"] is None:
+                    response_body = ("").encode()
+                else:
+                    response_body = (str(os.path.basename(global_memory["currentModel"]))).encode()
+            
+        elif self.path=="/api/admin/current_config": # Returns the current config loaded
+            if not args.admin:
+                response_body = ("Admin API disabled").encode()
+            elif not self.check_header_password(args.adminpassword):
+                return
+            else:
+                content_type = 'text/plain'
+                if global_memory["currentConfig"] is None:
+                    response_body = ("").encode()
+                else:
+                    response_body = (str(os.path.basename(global_memory["currentConfig"]))).encode()
         elif self.path.endswith(('/api')) or self.path.endswith(('/api/v1')):
             self.path = "/api"
             self.send_response(302)
@@ -2850,14 +3116,157 @@ Enter Prompt:<br>
             else:
                 response_body = (json.dumps([]).encode())
 
-        elif self.path.startswith(("/api/admin/reload_config")):
+        elif self.path.startswith("/api/data/list"): # Lists all saved data on the server - TODO support more advanced searches in the future if needed
+            if not args.admin:
+                response_body = (json.dumps({"success": False, "error": "Data API disabled"}).encode())
+            elif args.admindatadir == "":
+                    response_body = (json.dumps({"success": False, "error": "No data directory provided"}).encode())
+            else:
+                scenarios = False
+                try:
+                    tempbody = json.loads(body)
+                    if isinstance(tempbody, dict):
+                        scenarios = tempbody.get('scenarios', False)
+                except Exception:
+                    scenarios = ""
+                saves = {}
+                dynamicWhereClauses = []
+                if scenarios:
+                    dynamicWhereClauses.append("typeName = 'Scenarios'")
+                if (not self.check_header_password(args.adminpassword)):
+                    dynamicWhereClauses.append("isPublic = 1 and isEncrypted = 0")
+                saves = getSaves(whereClause=f"{'WHERE' if len(dynamicWhereClauses) > 0 else ''} {' AND '.join(dynamicWhereClauses)};")
+                jsonArray = json.dumps(saves)
+                response_body = (jsonArray).encode()
+
+        elif "/api/data/metadata" == self.path: # Gets metadata about the save types and groups
+            if not args.admin:
+                response_body = (json.dumps({"success": False, "error": "Data API disabled"}).encode())
+            elif args.admindatadir == "":
+                    response_body = (json.dumps({"success": False, "error": "No data directory provided"}).encode())
+            elif not self.check_header_password(args.adminpassword):
+                response_body = (json.dumps({"success": False, "error": "Admin password incorrect"}).encode())
+            else:
+                refreshDataMetadata()
+                jsonArray = json.dumps(dataMetadata)
+                response_body = (jsonArray).encode()
+
+        elif "/api/data/get" == self.path: # Gets saved data from the server
+            if not args.admin:
+                response_body = (json.dumps({"success": False, "error": "Data API disabled"}).encode())
+            elif args.admindatadir == "":
+                response_body = (json.dumps({"success": False, "error": "No data directory provided"}).encode())
+            else:
+                filename = ""
+                try:
+                    tempbody = json.loads(body)
+                    if isinstance(tempbody, dict):
+                        filename = tempbody.get('filename', "")
+                except Exception:
+                    filename = ""
+                saves = {}
+                if not self.check_header_password(args.adminpassword):
+                    saves = getSaveData(whereClause="WHERE isPublic = 1 and isEncrypted = 0;")
+                else:
+                    saves = getSaveData()
+                if filename != "" and filename in saves:
+                    jsonArray = json.dumps(saves[filename]["encodedSave"])
+                    response_body = (jsonArray).encode()
+                else:
+                    response_body = ("\{\}").encode()
+        
+        elif "/api/data/put" == self.path: # Saves data to the server (validating it as well)
+            if not args.admin:
+                response_body = (json.dumps({"success": False, "error": "Data API disabled"}).encode())
+            elif not self.check_header_password(args.adminpassword):
+                response_body = (json.dumps({"success": False, "error": "Admin password incorrect"}).encode())
+            else:
+                if args.admindatadir == "":
+                    response_body = (json.dumps({"success": False, "error": "No data directory provided"}).encode())
+                else:
+                    filename = ""
+                    bodyData = ""
+                    try:
+                        tempbody = json.loads(body)
+                        if isinstance(tempbody, dict):
+                            filename = tempbody.get('filename', "")
+                            bodyData = tempbody.get('data', "")
+                            isEncrypted = tempbody.get('isEncrypted', "0")
+                            group = tempbody.get('group', None)
+                            type = tempbody.get('type', None)
+                            thumbnail = tempbody.get('thumbnail', None)
+                    except Exception:
+                        filename = ""
+                    saves = getSaves()
+                    if filename != "" and bodyData != "" and filename not in saves:
+                        groupMetadata = getDataMetadata("group", group)
+                        typeMetadata = getDataMetadata("type", type)
+                        if group is not None and groupMetadata is None:
+                            response_body = (json.dumps({"success": False, "error": "Data group does not exist"}).encode())
+                        elif type is not None and typeMetadata is None:
+                            response_body = (json.dumps({"success": False, "error": "Data type does not exist"}).encode())
+                        elif not (isEncrypted == "0" or isEncrypted == "1"):
+                            response_body = (json.dumps({"success": False, "error": "Encrypted value must be 0 or 1"}).encode())
+                        elif isEncrypted == "1" and (groupMetadata is not None and groupMetadata["isPublic"] == 1):
+                            response_body = (json.dumps({"success": False, "error": "Encrypted saves are not allowed in public groups"}).encode())
+                        else:
+                            previewId = None
+                            if (thumbnail is not None):
+                                previewId = executeInsertFromDict(tableName="savePreviews", rowData={
+                                    "previewContent": thumbnail
+                                })
+                            if previewId is False:
+                                response_body = ("Error when saving preview to DB").encode()
+                            else:
+                                saveId = executeInsertFromDict(tableName="saveData", rowData={
+                                    "name": filename,
+                                    "encodedSave": bodyData,
+                                    "isEncrypted": isEncrypted, 
+                                    "typeId": typeMetadata["id"] if typeMetadata is not None else None, 
+                                    "previewId": previewId,
+                                    "groupId": groupMetadata["id"] if groupMetadata is not None else None
+                                })
+                                if saveId is False:
+                                    response_body = (json.dumps({"success": False, "error": "Error when saving to DB"}).encode())
+                                else:
+                                    response_body = (json.dumps({"success": True}).encode())
+                    else:
+                        response_body = (json.dumps({"success": False, "error": "Save already exists or no save name provided"}).encode())
+        elif "/api/data/delete" == self.path: # Delete data saved on the server
+            if not args.admin:
+                response_body = (json.dumps({"success": False, "error": "Data API disabled"}).encode())
+            elif not self.check_header_password(args.adminpassword):
+                response_body = (json.dumps({"success": False, "error": "Admin password incorrect"}).encode())
+            else:
+                if args.admindatadir == "":
+                    response_body = (json.dumps({"success": False, "error": "No data directory provided"}).encode())
+                else:
+                    filename = ""
+                    try:
+                        tempbody = json.loads(body)
+                        if isinstance(tempbody, dict):
+                            filename = tempbody.get('filename', "")
+                    except Exception:
+                        filename = ""
+                    saves = getSaves()
+                    if filename is not None and filename in saves:
+                        if (deleteSave(filename)):
+                            response_body = (json.dumps({"success": True}).encode())
+                        else:
+                            response_body = (json.dumps({"success": False, "error": "Error when deleting to DB"}).encode())
+                    else:
+                        response_body = (json.dumps({"success": False, "error": "Save does not exists or no save name provided"}).encode())
+
+        elif self.path.startswith(("/api/admin/reload_config")): # Reload the config (and optionally provide a model override)
             resp = {"success": False}
             if global_memory and args.admin and args.admindir and os.path.exists(args.admindir) and self.check_header_password(args.adminpassword):
                 targetfile = ""
+                targetModel = ""
                 try:
                     tempbody = json.loads(body)
                     if isinstance(tempbody, dict):
                         targetfile = tempbody.get('filename', "")
+                        targetModel = tempbody.get('modelName', "")
                 except Exception:
                     targetfile = ""
                 if targetfile and targetfile!="":
@@ -2865,7 +3274,17 @@ Enter Prompt:<br>
                     targetfilepath = os.path.join(dirpath, targetfile)
                     opts = [f for f in os.listdir(dirpath) if (f.endswith(".kcpps") or f.endswith(".kcppt")) and os.path.isfile(os.path.join(dirpath, f))]
                     if targetfile in opts and os.path.exists(targetfilepath):
-                        print(f"Admin: Received request to reload config to {targetfile}")
+                        # Now check targetModel
+                        if targetModel and targetModel!="":
+                            dirpath = os.path.abspath(args.admintextmodelsdir)
+                            targetfilepath = os.path.join(dirpath, targetModel)
+                            opts = [f for f in os.listdir(dirpath) if f.endswith(".gguf") and os.path.isfile(os.path.join(dirpath, f))]
+                            if targetModel in opts and os.path.exists(targetfilepath):
+                                global_memory["restart_model"] = targetModel
+                                print(f"Admin: Received request to reload config to {targetfile} and {targetModel}")
+
+                        if "restart_model" not in global_memory or global_memory["restart_target"] == "":   
+                            print(f"Admin: Received request to reload config to {targetfile}")
                         global_memory["restart_target"] = targetfile
                         resp = {"success": True}
             response_body = (json.dumps(resp).encode())
@@ -3405,6 +3824,8 @@ def show_gui():
 
     admin_var = ctk.IntVar(value=0)
     admin_dir_var = ctk.StringVar()
+    admin_text_model_dir_var = ctk.StringVar()
+    admin_data_dir_var = ctk.StringVar()
     admin_password_var = ctk.StringVar()
 
     def tabbuttonaction(name):
@@ -4003,6 +4424,8 @@ def show_gui():
     makecheckbox(admin_tab, "Enable Model Administration", admin_var, 1, 0,tooltiptxt="Enable a admin server, allowing you to remotely relaunch and swap models and configs.")
     makelabelentry(admin_tab, "Admin Password:" , admin_password_var, 3, 150,padx=120,singleline=True,tooltip="Require a password to access admin functions. You are strongly advised to use one for publically accessible instances!")
     makefileentry(admin_tab, "Config Directory:", "Select directory containing .kcpps files to relaunch from", admin_dir_var, 5, width=280, dialog_type=2, tooltiptxt="Specify a directory to look for .kcpps configs in, which can be used to swap models.")
+    makefileentry(admin_tab, "Model Directory:", "Select directory containing .gguf text model files to allow overriding configs with", admin_text_model_dir_var, 7, width=280, dialog_type=2, tooltiptxt="Specify a directory to look for .gguf text model files in, which can be used to swap models within a config.")
+    makefileentry(admin_tab, "Data Directory:", "Select directory which will be used to store user data if desired", admin_data_dir_var, 9, width=280, dialog_type=2, tooltiptxt="Specify a directory to store user data in.")
 
     def kcpp_export_template():
         nonlocal kcpp_exporting_template
@@ -4233,6 +4656,8 @@ def show_gui():
 
         args.admin = (admin_var.get()==1)
         args.admindir = admin_dir_var.get()
+        args.admintextmodelsdir = admin_text_model_dir_var.get()
+        args.admindatadir = admin_data_dir_var.get()
         args.adminpassword = admin_password_var.get()
 
     def import_vars(dict):
@@ -4406,6 +4831,8 @@ def show_gui():
 
         admin_var.set(dict["admin"] if ("admin" in dict) else 0)
         admin_dir_var.set(dict["admindir"] if ("admindir" in dict and dict["admindir"]) else "")
+        admin_text_model_dir_var.set(dict["admintextmodelsdir"] if ("admintextmodelsdir" in dict and dict["admintextmodelsdir"]) else "")
+        admin_data_dir_var.set(dict["admindatadir"] if ("admindatadir" in dict and dict["admindatadir"]) else "")
         admin_password_var.set(dict["adminpassword"] if ("adminpassword" in dict and dict["adminpassword"]) else "")
 
         importvars_in_progress = False
@@ -4755,6 +5182,7 @@ def setuptunnel(global_memory, has_sd):
     try:
         import subprocess
         import re
+        
         global sslvalid
         httpsaffix = ("https" if sslvalid else "http")
         ssladd = (" --no-tls-verify" if sslvalid else "")
@@ -4900,7 +5328,7 @@ def reload_new_config(filename): #for changing config after launch
             config = json.load(f)
             args.istemplate = False
             for key, value in config.items(): #do not overwrite certain values
-                if key not in ["remotetunnel","showgui","port","host","port_param","admin","adminpassword","admindir","ssl","nocertify","benchmark","prompt","config"]:
+                if key not in ["remotetunnel","showgui","port","host","port_param","admin","adminpassword","admindir","admintextmodelsdir","admindatadir","ssl","nocertify","benchmark","prompt","config"]:
                     setattr(args, key, value)
             setattr(args,"showgui",False)
             setattr(args,"benchmark",False)
@@ -5162,14 +5590,18 @@ def main(launch_args):
             input()
     else:  # manager command queue for admin mode
         with multiprocessing.Manager() as mp_manager:
-            global_memory = mp_manager.dict({"tunnel_url": "", "restart_target":"", "input_to_exit":False, "load_complete":False})
+            global_memory = mp_manager.dict({"tunnel_url": "", "restart_target": "", "input_to_exit":False, "load_complete":False, "restart_model": "", "currentConfig": None, "modelOverride": None, "currentModel": None})
 
             if args.remotetunnel and not args.prompt and not args.benchmark:
                 setuptunnel(global_memory, True if args.sdmodel else False)
 
-            # invoke the main koboldcpp process
+            # Sets the current configuration
+            global_memory["currentConfig"] = args.config[0] if "config" in args and args.config is not None and len(args.config) > 0 else None
+
+            # Takes a copy of original args for failure recovery
             original_args = copy.deepcopy(args)
 
+            # invoke the main koboldcpp process
             kcpp_instance = multiprocessing.Process(target=kcpp_main_process,kwargs={"launch_args": args, "g_memory": global_memory, "gui_launcher": using_gui_launcher})
             kcpp_instance.daemon = True
             kcpp_instance.start()
@@ -5199,8 +5631,13 @@ def main(launch_args):
                     if fault_recovery_mode and global_memory["load_complete"]:
                         fault_recovery_mode = False
                     restart_target = global_memory["restart_target"]
+                    restart_model = global_memory["restart_model"]
                     if restart_target!="":
-                        print(f"Reloading new config: {restart_target}")
+                        if restart_model != "":
+                            global_memory["restart_model"] = ""
+                            print(f"Reloading new config: {restart_target} with model {restart_model}")
+                        else:
+                            print(f"Reloading new config: {restart_target}")
                         global_memory["restart_target"] = ""
                         time.sleep(0.5) #sleep for 0.5s then restart
                         if args.admin and args.admindir:
@@ -5215,10 +5652,22 @@ def main(launch_args):
                                 print("Restarting KoboldCpp...")
                                 fault_recovery_mode = True
                                 reload_new_config(targetfilepath)
+
+                                args.currentConfig = targetfilepath
+                                global_memory["currentConfig"] = targetfilepath
+                                global_memory["modelOverride"] = None
+                                if (args.admin and args.admintextmodelsdir and restart_model != ""):
+                                    dirpath = os.path.abspath(args.admintextmodelsdir)
+                                    modelFilepath = os.path.join(dirpath, restart_model)
+                                    if os.path.exists(modelFilepath):
+                                        print(f"Setting model to {restart_model}")
+                                        global_memory["modelOverride"] = modelFilepath
+
                                 kcpp_instance = multiprocessing.Process(target=kcpp_main_process,kwargs={"launch_args": args, "g_memory": global_memory, "gui_launcher": False})
                                 kcpp_instance.daemon = True
                                 kcpp_instance.start()
                                 global_memory["restart_target"] = ""
+                                global_memory["restart_model"] = ""
                                 time.sleep(3)
                     else:
                         time.sleep(0.2)
@@ -5242,6 +5691,12 @@ def kcpp_main_process(launch_args, g_memory=None, gui_launcher=False):
 
     if args.model_param and args.prompt and not args.benchmark and not (args.debugmode >= 1):
         suppress_stdout()
+
+    if global_memory["modelOverride"] is not None:
+        args.model_param = global_memory["modelOverride"]
+    
+    noModelLoaded = args.nomodel and not ("model_param" in args and len(args.model_param) > 0 and len(args.model_param[0]) > 0)
+    global_memory["currentModel"] = None if noModelLoaded else args.model_param
 
     if args.model_param and (args.benchmark or args.prompt):
         start_server = False
@@ -5373,6 +5828,7 @@ def kcpp_main_process(launch_args, g_memory=None, gui_launcher=False):
     # sanitize and replace the default vanity name. remember me....
     if args.model_param and args.model_param!="":
         newmdldisplayname = os.path.basename(args.model_param)
+        modelFilename = newmdldisplayname
         newmdldisplayname = os.path.splitext(newmdldisplayname)[0]
         friendlymodelname = "koboldcpp/" + sanitize_string(newmdldisplayname)
 
@@ -5988,6 +6444,8 @@ if __name__ == '__main__':
     admingroup.add_argument("--admin", help="Enables admin mode, allowing you to unload and reload different configurations or models.", action='store_true')
     admingroup.add_argument("--adminpassword", metavar=('[password]'), help="Require a password to access admin functions. You are strongly advised to use one for publically accessible instances!", default=None)
     admingroup.add_argument("--admindir", metavar=('[directory]'), help="Specify a directory to look for .kcpps configs in, which can be used to swap models.", default="")
+    admingroup.add_argument("--admintextmodelsdir", metavar=('[directory]'), help="Used with remote control config switching. By passing in this argument, models in the directory will by available for restarting operations.", default="")
+    admingroup.add_argument("--admindatadir", metavar=('[directory]'), help="Specify a directory to store user data in. By passing in this argument, users with the admin password will be able to save and load data from the server database.", default="")
 
     deprecatedgroup = parser.add_argument_group('Deprecated Commands, DO NOT USE!')
     deprecatedgroup.add_argument("--hordeconfig", help=argparse.SUPPRESS, nargs='+')

@@ -138,3 +138,6 @@ conda/
 
 # Jetbrains idea folder
 .idea/
+
+# Cloudflare files
+cloudflared.*
