@@ -963,8 +963,7 @@ void sample_xtc(llama_token_data_array * cur_p, float xtc_threshold, float xtc_p
                 gpt_vocab::id token        = cur_p->data[i].p;
                 std::string   tokenizedstr = FileFormatTokenizeID(token, file_format);
                 ::utreplace(tokenizedstr, "\n", "\\n");
-                printf("%s(%s %.02f%%)", i == 0 ? "" : " ", RemoveBell(tokenizedstr).c_str(),
-                       100.f * cur_p->data[i].p);
+                printf("%s(%s %.02f%%)", i == 0 ? "" : " ", RemoveBell(tokenizedstr).c_str(), 100.f * cur_p->data[i].p);
             }
             cur_p->data[i].logit -= 999.0f;  // infinity gets wonky results downstream, this hack works well enough
         }
