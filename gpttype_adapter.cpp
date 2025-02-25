@@ -915,7 +915,7 @@ void sample_top_a(llama_token_data_array * candidates, float a, size_t min_keep)
 
 void sample_xtc(llama_token_data_array * cur_p, float xtc_threshold, float xtc_probability, float xtc_nsigma, std::unordered_map<llama_token, int> nsig_tokens,  std::mt19937 & rng)
 {
-    if (xtc_threshold > 0.5f || xtc_probability <= 0.0f || cur_p->size <= 1) {
+    if (xtc_threshold > 0.5f || xtc_probability <= 0.0f || cur_p->size <= 1 || (xtc_nsigma > 0.0f && nsig_tokens.size() <= 1)) {
         return;
     }
 
