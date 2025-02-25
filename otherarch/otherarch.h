@@ -47,7 +47,6 @@ struct kcpp_params {
     std::vector<std::string> dry_sequence_breakers; // DRY sequence breakers
     float   xtc_threshold      = 0;
     float   xtc_probability    = 0;     // 0 = disabled
-    float   xtc_ratio          = 1.0f;  // 1.0 = disabled
     float   xtc_nsigma         = 0.0f;  // enables DynaXTC if greater than 0. uses nsigma's calculations to determin tokens to trim
     float   dynatemp_range     = 0.0f;  // enables DynaTemp if greater than 0. dynatemp_min = temperature - dt_range, dynatemp_max = temperature + dt_range
     float   dynatemp_exponent  = 1.0f;
